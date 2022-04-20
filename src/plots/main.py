@@ -1,25 +1,36 @@
+import asyncio
 import sys
 import threading
 import types
 from typing import Optional, Any
 from uuid import uuid4
 
-import nbformat as nbformat
+import nbformat
 import tornado.web
 import tornado.websocket
 import tornado.ioloop
 from tornado import httputil
+from tornado.platform.asyncio import AnyThreadEventLoopPolicy
+from tornado.queues import Queue
 
+from src.plots.run_context import ScriptRunContext, set_script_run_context
+
+
+ioloop = tornado.ioloop.IOLoop.current()
+
+tornado.websocket.websocket_connect()
 
 class WsHandler(tornado.websocket.WebSocketHandler):
 
-    async def open(self):
+    def open(self):
         print("New client connected")
-        await self.write_message("You are connected")
+        self.write_message("You are connected")
         self.singleton = Singleton.get_current()
+        self.singleton.open(self)
 
     async def on_message(self, message):
-        self.singleton.write_message(message)
+        self.singleton.on_message(message)
+
 
     def on_close(self):
         print("Client disconnected")
@@ -28,7 +39,7 @@ class WsHandler(tornado.websocket.WebSocketHandler):
         return True
 
 
-class Singleton:
+class Singleton: # todo not sure about that this should be singleton
     _singleton: Optional["Singleton"] = None
 
     @classmethod
@@ -42,36 +53,41 @@ class Singleton:
         if Singleton._singleton is not None:
             raise RuntimeError("Singleton already initialized. Use .get_current() instead")
         Singleton._singleton = self
-        self.socket = None
-        self.nbr = None
+        self.ws = None
+        self.sr = None
 
-    def open(self, socket):
-        self.socket = socket
-        self.nbr = NotebookRunner('../../nb_script.ipynb')
+    def open(self, ws):
+        self.ws = ws
+        self.sr = ScriptRunner('../../nb_script.ipynb', ScriptRunContext(ws)) # todo use server instead of ws, so it can contain logic (like blocking output on rerun)
 
     def on_message(self, message):
-        self.nbr.run()
+        print('Running script on message:', message)
+        self.sr.run()
 
     def write_message(self, message):
-        self.socket.write_message("You said: " + message)
+        self.ws.write_message("You said: " + message)
 
 
+class ScriptRunner:
+    def __init__(self, script_path, ctx: ScriptRunContext = None):
+        self.script_path = script_path
+        self.script_thread = None
+        self.ctx = ctx
 
-# class ScriptRunner:
-#     def __init__(self, script_path, socket=None):
-#         self.script_path = script_path
-#         self.script_thread = None
-#
-#     def run(self):
-#         self.script_thread = threading.Thread(
-#             target=self._run_script_thread,
-#             name="ScriptRunner." + self.script_path,
-#         )
-#         self.script_thread.start()
-#
-#     def _run_script_thread(self):
-#         nb_runner = NotebookRunner(self.script_path)
-#         nb_runner.run()
+    def run(self):
+        print('Starting thread...')
+        self.script_thread = threading.Thread(
+            target=self._run_script_thread,
+            name="ScriptRunner." + self.script_path,
+        )
+        self.script_thread.start()
+
+    def _run_script_thread(self): # todo we should do an infinite thread
+        print('Running thread...')
+        asyncio.set_event_loop(asyncio.new_event_loop())  # todo grab event loop from main thread: https://github.com/tornadoweb/tornado/issues/3069
+        set_script_run_context(self.ctx)
+        nb_runner = NotebookRunner(self.script_path)
+        nb_runner.run()
 
 
 class NotebookRunner:
@@ -85,6 +101,7 @@ class NotebookRunner:
         self.path = path
 
     def run(self):
+        print('Running notebook...')
         with open(self.path, "r", encoding="utf-8") as file:
             notebook = nbformat.read(file, 4)
 
@@ -106,4 +123,5 @@ application = tornado.web.Application([
     (r"/", WsHandler),
 ])
 application.listen(8888)
-tornado.ioloop.IOLoop.instance().start()
+
+ioloop.start()
