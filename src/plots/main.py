@@ -15,22 +15,29 @@ from tornado.queues import Queue
 
 from src.plots.run_context import ScriptRunContext, set_script_run_context
 
-
 ioloop = tornado.ioloop.IOLoop.current()
 
-tornado.websocket.websocket_connect()
 
 class WsHandler(tornado.websocket.WebSocketHandler):
 
-    def open(self):
+    async def open(self):
         print("New client connected")
-        self.write_message("You are connected")
+        await self.write_message("You are connected")
+        self.read_queue = Queue(1)
         self.singleton = Singleton.get_current()
         self.singleton.open(self)
+        ioloop.spawn_callback(self.singleton.listen)
 
     async def on_message(self, message):
-        self.singleton.on_message(message)
+        # self.singleton.on_message(message)
+        print('Putting message:', message)
+        await self.read_queue.put(message)
 
+    async def read_message(self):
+        print('Waiting message...')
+        msg = await self.read_queue.get()
+        print('Got message:', msg)
+        return msg
 
     def on_close(self):
         print("Client disconnected")
@@ -39,7 +46,7 @@ class WsHandler(tornado.websocket.WebSocketHandler):
         return True
 
 
-class Singleton: # todo not sure about that this should be singleton
+class Singleton:  # todo not sure about that this should be singleton
     _singleton: Optional["Singleton"] = None
 
     @classmethod
@@ -58,11 +65,19 @@ class Singleton: # todo not sure about that this should be singleton
 
     def open(self, ws):
         self.ws = ws
-        self.sr = ScriptRunner('../../nb_script.ipynb', ScriptRunContext(ws)) # todo use server instead of ws, so it can contain logic (like blocking output on rerun)
+        self.sr = ScriptRunner('../../nb_script.ipynb', ScriptRunContext(ws))
+        # todo use server instead of ws, so it can contain logic (like blocking output on rerun)
 
-    def on_message(self, message):
-        print('Running script on message:', message)
-        self.sr.run()
+    async def listen(self):
+        print('Listening...')
+        while True:
+            msg = await self.ws.read_message()
+            print('Running script on message:', msg)
+            self.sr.run()
+
+    # def on_message(self, message):
+    #     print('Running script on message:', message)
+    #     self.sr.run()
 
     def write_message(self, message):
         self.ws.write_message("You said: " + message)
@@ -82,9 +97,10 @@ class ScriptRunner:
         )
         self.script_thread.start()
 
-    def _run_script_thread(self): # todo we should do an infinite thread
+    def _run_script_thread(self):  # todo we should do an infinite thread
         print('Running thread...')
-        asyncio.set_event_loop(asyncio.new_event_loop())  # todo grab event loop from main thread: https://github.com/tornadoweb/tornado/issues/3069
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        # todo grab event loop from main thread: https://github.com/tornadoweb/tornado/issues/3069
         set_script_run_context(self.ctx)
         nb_runner = NotebookRunner(self.script_path)
         nb_runner.run()
