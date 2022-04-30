@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -22,6 +23,10 @@ from src.plots.run_context import ScriptRunContext, set_script_run_context
 
 ioloop = tornado.ioloop.IOLoop.current()
 
+
+# TODO !!! : https://www.tornadoweb.org/en/stable/web.html#thread-safety-notes
+
+# todo: locking states, threadpool, cleanup
 
 class WsHandler(tornado.websocket.WebSocketHandler):
 
@@ -51,7 +56,7 @@ class WsHandler(tornado.websocket.WebSocketHandler):
 
 
 class Singleton:  # todo not sure about that this should be singleton
-# todo  shuold be: store the collection of script runners, nothing else
+    # todo  shuold be: store the collection of script runners, nothing else
     _singleton: Optional["Singleton"] = None
 
     @classmethod
@@ -65,70 +70,60 @@ class Singleton:  # todo not sure about that this should be singleton
         if Singleton._singleton is not None:
             raise RuntimeError("Singleton already initialized. Use .get_current() instead")
         Singleton._singleton = self
-        self.ws = None
+        self.ws: WsHandler = None
         self.sr = None
+        self.periodic = None
 
     def open(self, ws):
         self.ws = ws
-        self.sr = ScriptRunner('../../nb_script.ipynb', ScriptRunContext(ws))
+        self.sr = ScriptRunner(ScriptRunContext('../../nb_script.ipynb'))
         # todo use server instead of ws, so it can contain logic (like blocking output on rerun)
-        self.sr.run()
+        self.ws.on_message = self.sr.rerun
+        self.periodic = tornado.ioloop.PeriodicCallback(self.output, callback_time=100, jitter=0.1)
+        ioloop.spawn_callback(self.listening)
+        self.periodic.start()
 
-    # def on_message(self, message):
-    #     print('Running script on message:', message)
-    #     self.sr.run()
+    def output(self):
+        if len(self.sr.ctx.output) > 0:
+            self.write_message(self.sr.ctx.output.pop(0))
 
-    # def write_message(self, message):
-    #     self.ws.write_message("You said: " + message)
+    async def listening(self):
+        print('listening...')
+        while True:
+            e = await self.sr.ctx.q.get()
+            self.write_message(e)
+
+    def write_message(self, message):
+        self.ws.write_message(">>> " + message)
 
 
 class ScriptRunner:
-    def __init__(self, script_path, ctx: ScriptRunContext = None):
-        self.script_path = script_path
+    def __init__(self, ctx: ScriptRunContext = None):
+        self.script_path = ctx.script_path
         self.script_thread = None
         self.ctx = ctx
+
+    def rerun(self, msg):
+        if self.script_thread and self.script_thread.is_alive():
+            self.ctx.data = 'rerun: ' + msg
+        self.run()
 
     def run(self):
         print('Starting thread...')
         self.script_thread = threading.Thread(
             target=self._run_script_thread,
             name="ScriptRunner:" + self.script_path,
-            args=[self.ctx, self.script_path]
+            args=[self.ctx]
         )
         self.script_thread.start()
-        self.script_thread.join() # todo not needed?
-        print('Ctx data after run:', self.ctx.data)
+        self.script_thread.join()  # todo not needed?
+        print('Ctx data after run:', json.dumps(self.ctx.data, indent=4))
 
-    def _run_script_thread(self, ctx, script_path):  # todo we should do an infinite thread
+    def _run_script_thread(self, ctx):  # todo we should do an infinite thread
         print('Running thread...')
-        #asyncio.set_event_loop(asyncio.new_event_loop())
-        #local_ioloop = tornado.ioloop.IOLoop.instance()
-        local_ioloop = ioloop
-        # todo grab event loop from main thread: https://github.com/tornadoweb/tornado/issues/3069
         set_script_run_context(ctx)
-        self.ss = ScriptServer(ctx, script_path, local_ioloop)
-        self.ss.start()
-
-
-class ScriptServer:
-    def __init__(self, ctx, script_path, local_ioloop):
-        self.ioloop = local_ioloop
-        self.ctx = ctx
-        self.script_path = script_path
-        self.nb_runner = NotebookRunner(script_path)
-
-    def start(self):
-        asyncio.new_event_loop().create_task(self.listen())
-        #self.ioloop.spawn_callback(self.listen)
-        #self.ioloop.start()
-
-    async def listen(self):
-        print('Listening...')
-        self.ctx.ws.write_message('Listening...')
-        while True:
-            msg = await self.ctx.ws.read_message()
-            print('Running script on message:', msg)
-            self.nb_runner.run()
+        self.nb_runner = NotebookRunner(ctx.script_path)
+        self.nb_runner.run()
 
 
 class NotebookRunner:
@@ -139,25 +134,43 @@ class NotebookRunner:
     """
 
     def __init__(self, path):
+        self.module = None
         self.path = path
 
-    def run(self):
+    def run(self,):
         print('Running notebook...')
         with open(self.path, "r", encoding="utf-8") as file:
             notebook = nbformat.read(file, 4)
 
-        module = types.ModuleType("__main__")
-        module.__file__ = self.path
-        module.__loader__ = self
-        sys.modules["__main__"] = module
+        if not self.module:
+            module = types.ModuleType("__main__")
+            module.__file__ = self.path
+            module.__loader__ = self
+            sys.modules["__main__"] = module
+            self.module = module
 
         for cell in notebook.cells:
             if cell.cell_type == 'code':
-                exec(cell.source, module.__dict__)  # todo transform cell
+                exec(cell.source, self.module.__dict__)  # todo transform cell with IPython
+
+        print_module(self.module.__dict__)
+
+    def run_cell(self, cell_i=None):
+        print('Running cell...')
+        with open(self.path, "r", encoding="utf-8") as file:
+            notebook = nbformat.read(file, 4)
+
+        cell = [cell for cell in notebook.cells if  cell.cell_type == 'code'][cell_i]
+        exec(cell.source, self.module.__dict__)  # todo transform cell with IPython
+
+        print_module(self.module.__dict__)
 
 
 def get_filename(path):
     return path.split('/\\')[-1].replace('.ipynb', '')
+
+def print_module(module):
+    print(json.dumps(module.__dict__))
 
 
 application = tornado.web.Application([
