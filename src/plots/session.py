@@ -1,27 +1,47 @@
 import json
-from typing import Dict, Optional
+from typing import Dict, Optional, Any, List
 
 from src.plots.run_context import SessionContext
 from src.plots.runner import ScriptRunner
 from src.plots.script import ScriptInfo
-from src.plots.util import to_json
+from src.plots.util import to_json, from_json
 from src.plots.widget import Widget
 
 
 class InputMessage:
-    def __init__(self, widget_key, widget_type, value):
-        self.widget_key = widget_key
-        self.widget_type = widget_type
-        self.value = value
+    def __init__(self, message_type, data):
+        self.message_type = message_type
+        self.data = data
 
     @classmethod
     def from_json(cls, json_str) -> "InputMessage":
+        message = cls(**json.loads(json_str))
+        if message.message_type == WidgetStateUpdate.MESSAGE_TYPE:
+            message.data = [WidgetStateUpdate(**json_dict) for json_dict in message.data]
+        return message
+
+
+class WidgetStateUpdate:
+    MESSAGE_TYPE = 'WIDGET_STATE_UPDATE'
+
+    def __init__(self, widget_key, value):
+        self.widget_key = widget_key
+        self.value = value
+
+    @classmethod
+    def from_json(cls, json_str) -> "WidgetStateUpdate":
         return cls(**json.loads(json_str))
 
 
+class OutputMessage:
+    def __init__(self, message_type, data):
+        self.message_type = message_type
+        self.data = data
+
+
 class WidgetState:  # = Output message
-    def __init__(self, widget_key, widget_type, cell_id, cell_index, widget_index, widget: Widget):
-        self.widget_key = widget_key
+    def __init__(self, widget_type, cell_id, cell_index, widget_index, widget: Widget):
+        self.widget_key = widget.key
         self.widget_type = widget_type
         self.cell_id = cell_id
         self.cell_index = cell_index
@@ -48,14 +68,18 @@ class SessionHandler:  # session based handler for messages and everything
         )
         self.script_runner.run()
 
-    async def send_widget_states(self, widget_states: Optional[Dict[str, WidgetState]] = None):
+    async def send_widget_states(self, widget_states: Optional[List[WidgetState]] = None):
         if not widget_states:
-            widget_states = self.widget_states
+            widget_states = self.widget_states.values()
 
-        await self.websocket.write_message(to_json(widget_states))  # todo: sorting and batching
+        def widget_state_sorter(widget_state: WidgetState):
+            return widget_state.widget_index, widget_state.cell_index
 
-        # def widget_state_sorter(widget_state: WidgetState):
-        #     return widget_state.widget_index, widget_state.cell_index
+        widget_states.sort(key=widget_state_sorter)
+
+        await self.websocket.write_message(to_json(
+            OutputMessage(message_type='WIDGET_STATES', data=widget_states)
+        ))  # todo: batching
 
     async def _on_input(self, message_str):
         """
@@ -63,13 +87,22 @@ class SessionHandler:  # session based handler for messages and everything
         If the input value changed, reruns the script with the new value
         """
         message = InputMessage.from_json(message_str)
+        if not message.message_type == WidgetStateUpdate.MESSAGE_TYPE:
+            return
+
         # FIXME: investigate locking strategies for input state
-        widget_state = self.widget_states.get(message.widget_key)
-        if widget_state is not None and not widget_state.widget.value == message.value:
-            self.widget_states[message.widget_key].widget.value = message.value
-            self.script_runner.run(cell_id=widget_state.cell_id)
-        else:
-            print('Rerun skipped with message key:', message.widget_key)
+        n_cells = self.script_runner.script_info.n_cells + 1
+        smallest_cell_index = n_cells + 1
+        for state_update in message.data:
+            widget_state = self.widget_states.get(state_update.widget_key)
+            if widget_state is not None and not widget_state.widget.value == state_update.value:
+                self.widget_states[state_update.widget_key].widget.value = state_update.value
+                cell_index = self.widget_states[state_update.widget_key].cell_index
+                if cell_index < smallest_cell_index:
+                    smallest_cell_index = cell_index
+
+        if smallest_cell_index < n_cells:
+            self.script_runner.run(cell_index=smallest_cell_index)
 
     def send_widget(self, widget: Widget, cell_id, cell_index, widget_index):
         """
@@ -77,7 +110,6 @@ class SessionHandler:  # session based handler for messages and everything
         Should be called from the script thread
         """
         self.widget_states[widget.key] = WidgetState(
-            widget_key=widget.key,
             widget_type=widget.WIDGET_TYPE,
             cell_id=cell_id,
             cell_index=cell_index,
@@ -87,7 +119,7 @@ class SessionHandler:  # session based handler for messages and everything
 
         # todo: do not send if nothing changed? Later: hash and cache
         # Using ioloop callback, because Tornado web server is available only from the main thread
-        self.ioloop.add_callback(self.send_widget_states, {widget.key: self.widget_states[widget.key]})
+        self.ioloop.add_callback(self.send_widget_states, [self.widget_states[widget.key]])
 
     def close(self):
         print('Session closed')

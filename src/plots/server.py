@@ -16,7 +16,6 @@ class WebSocketHandler(tornado.websocket.WebSocketHandler):
 
     async def open(self, script_name_param):
         print("New client connected")
-        await self.write_message("You are connected")
         server = Server.get_current()
         await server.open_connection(self, script_name_param)
 
@@ -70,7 +69,6 @@ class Server:
 
         session_handler = SessionHandler(session_id, websocket, self.ioloop, script_info)
         self.sessions[session_id] = session_handler
-        await session_handler.send_widget_states()
 
     def close_connection(self, session_id):
         self.sessions[session_id].close()

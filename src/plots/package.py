@@ -1,6 +1,7 @@
 import threading
 from abc import ABC, abstractmethod
 
+from src.plots.util import hash_string
 from src.plots.widget import Widget, TextInput, Text
 
 
@@ -40,8 +41,9 @@ class _ServerSession(_BaseSession):
     def _input_widget(self, widget):
         self._set_run_context()
 
-        if widget.key in self._context.session_context.widget_states.keys():  # todo: add cell id check
-            widget.value = self._context.session_context.widget_states[widget.key].widget.value
+        key = hash_string(widget.key)
+        if key in self._context.session_context.widget_states.keys():  # todo: add cell id check?
+            widget.value = self._context.session_context.widget_states[key].widget.value
 
         self._widget(widget)
 
@@ -53,6 +55,8 @@ class _ServerSession(_BaseSession):
 
         if self._context.stop_execution:  # FIXME: locking? Does not help here!
             return widget.value
+
+        widget.key = hash_string(widget.key)
 
         self._context.session_context.send_widget(
             widget,

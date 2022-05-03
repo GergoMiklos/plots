@@ -51,28 +51,19 @@ class ScriptRunner:
         sys.modules["__main__"] = module
         self.script_module = module
 
-    def _should_rerun(self, cell_id):
-        if not cell_id:
+    def _should_rerun(self, cell_index):
+        if not cell_index:
             return True
 
         if not self.script_thread or not self.script_thread.is_alive():
-            return True
-
-        cell_index = None
-        for cell in self.script_info.compiled_cells:
-            if cell.id == cell_id:
-                cell_index = cell.index
-                break
-
-        if not cell_index:
             return True
 
         if get_run_context(self.script_thread).current_cell_index >= cell_index:
             get_run_context(self.script_thread).stop_execution = True
             return True
 
-    def run(self, cell_id=None):
-        if not self._should_rerun(cell_id):
+    def run(self, cell_index=None):
+        if not self._should_rerun(cell_index):
             return
 
         print('Starting thread...')
@@ -81,7 +72,7 @@ class ScriptRunner:
         self.script_thread = threading.Thread(
             target=self._execute_script_thread,
             name=f"ScriptRunner:{self.script_info.name}:{generate_id()}",
-            args=[thread_run_context, cell_id]
+            args=[thread_run_context, cell_index]
         )
         self.script_thread.start()
 
@@ -99,7 +90,7 @@ class ScriptRunner:
         # could not find the cell, return the whole notebook to execute
         return self.script_info.compiled_cells
 
-    def _execute_script_thread(self, thread_run_context: RunContext, cell_id=None):
+    def _execute_script_thread(self, thread_run_context: RunContext, cell_index=None):
         if self.script_info.compiled_cells is None:
             self._precompile_script()
 
@@ -109,7 +100,7 @@ class ScriptRunner:
         set_run_context(thread_run_context)
 
         print('Running cells...')
-        for cell in self._calculate_cells_to_execute(cell_id):
+        for cell in self._calculate_cells_to_execute(cell_index):
 
             thread_run_context.current_cell_id = cell.id
             thread_run_context.current_cell_index = cell.index

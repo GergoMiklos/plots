@@ -25,6 +25,7 @@ turn into a package
 add typing everywhere
 cookies
 get available scripts
+pip install packages
 
 ------ BASE -----
 

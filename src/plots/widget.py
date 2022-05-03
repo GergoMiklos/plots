@@ -5,8 +5,8 @@ class Widget(ABC):
     WIDGET_TYPE = 'BASE'
 
     def __init__(self, key, value):
-        self.value = value
         self.key = key
+        self.value = value
 
 
 class Text(Widget):
