@@ -1,2 +1,3 @@
 # plots
-Experiments for running ipynb files through Tornado websockets
+
+Experiments for serving ipynb notebook files through Tornado websockets as a web application
