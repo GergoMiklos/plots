@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+enum WidgetType {
+  TEXT = 0;
+  TEXT_INPUT = 1;
+}

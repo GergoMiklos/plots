@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+message OutputMessage {
+  string widget_key = 1;
+
+  string cell_id = 2;
+  int32 cell_index = 3;
+  int32 widget_index = 4;
+
+  string widget_type = 5;
+  string value = 6;
+}
