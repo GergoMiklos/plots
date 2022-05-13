@@ -1,4 +1,4 @@
-# plots
+# 🚩 plots
 
 Experiments for serving ipynb notebook files through Tornado websockets as a web application
 
@@ -14,3 +14,7 @@ Experiments for serving ipynb notebook files through Tornado websockets as a web
 
 - On user input the client sends the updated states to the server
 - The server calculates wich cell to execute again
+
+---
+
+There are seperate repos for the frontend, js widgets, and python widgets.
